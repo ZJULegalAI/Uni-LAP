@@ -2,10 +2,9 @@
 # @Time    : 2024/11/24 15:33
 # @Author  : Wenlin Zhong
 # @Contact : 13527860108@163.com
-
+import json
 from itertools import chain
 import numpy as np
-import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -46,7 +45,7 @@ class LawModel(nn.Module):
         # 词嵌入层
         self.embedding = nn.Embedding(config.vocab_size, config.word_emb_dim)
 
-        # CNN 部分
+        # 移除BERT部分，替换为CNN
         self.cnn = nn.Sequential(
             nn.Conv1d(in_channels=config.word_emb_dim, out_channels=128, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -61,28 +60,14 @@ class LawModel(nn.Module):
 
         # 全连接层
         self.fc = nn.Sequential(
-            nn.Linear(512 * 62, config.mlp_size),  # 输入维度改为 31744
+            nn.Linear(512 * (config.MAX_SENTENCE_LENGTH // 8), config.mlp_size),  # 输入维度改为 31744
             nn.ReLU(),
             nn.Linear(config.mlp_size, config.law_label_size)
         )
 
-        # 损失函数
-        self.law_loss = torch.nn.BCEWithLogitsLoss()  # 二元交叉熵损失函数
-        self.topk_loss_constant = 1.0  # 如果真实标签在前 k 个预测中，添加的常数奖励  TODO  超参数
+        self.law_loss = torch.nn.BCEWithLogitsLoss()  # 使用二元交叉熵损失函数
         self.topk = config.topk  # 前 k 个预测
-
-    def classifier_layer(self, doc_out, law_labels):
-        """
-        :param doc_out: [batch_size, 4 * hidden_dim]
-        :param law_labels: [batch_size, law_label_size]
-        """
-        law_logits = self.fc(doc_out)  # [batch_size, law_label_size]
-        law_loss = self.law_loss(law_logits, law_labels.float())  # 二元交叉熵损失
-        law_probs = torch.sigmoid(law_logits)  # 使用 sigmoid 激活函数
-
-        return law_probs, law_loss
     
-
     def calculate_topk_loss(self, law_probs, law_labels):
         law_probs_softmax = F.softmax(law_probs, dim=1)
 
@@ -118,7 +103,20 @@ class LawModel(nn.Module):
     #     loss = ((topk_law_probs - topk_law_labels) ** 2).sum() / (self.topk * law_probs.size(0))
 
     #     return loss
-    
+
+    def classifier_layer(self, doc_out, law_labels):
+        """
+        :param doc_out: [batch_size, 4 * hidden_dim]
+        :param law_labels: [batch_size, law_label_size]
+        """
+        
+        law_logits = self.fc(doc_out)  # [batch_size, law_label_size]
+        law_loss = self.law_loss(law_logits, law_labels.float())  # 将标签转换为float类型
+        law_probs = torch.sigmoid(law_logits)  # 使用sigmoid激活函数
+        # law_predicts = (law_probs > 0.3).int()  # 使用0.5作为阈值进行预测
+
+        return law_probs, law_loss
+
 
     def forward(self, input_facts, type_ids_list, attention_mask_list, law_labels):
         """
@@ -132,16 +130,19 @@ class LawModel(nn.Module):
             law_loss: 损失值
             law_preds: 预测的法条序号列表
         """
+        # 将输入数据通过CNN
+        # print("input_facts.size():", input_facts.size())
+
         batch_size = input_facts.size(0)
-
+        # 将 input_ids 转换为词嵌入
         input_facts = self.embedding(input_facts)  # [batch_size, seq_len, word_emb_dim]
-        input_facts = input_facts.permute(0, 2, 1)  # [batch_size, word_emb_dim, seq_len]
 
+        input_facts = input_facts.permute(0, 2, 1)  # [batch_size, word_emb_dim, seq_len]
         cnn_out = self.cnn(input_facts)  # [batch_size, 512, seq_len // 8]
         cnn_out = cnn_out.view(batch_size, -1)  # [batch_size, 512 * (seq_len // 8)]
 
+        # 分类器
         law_probs, law_loss = self.classifier_layer(cnn_out, law_labels)  # [batch_size, law_label_size]
-
         topk_loss = self.calculate_topk_loss(law_probs, law_labels)
 
         # total_loss = law_loss + topk_loss  # 总损失
@@ -149,22 +150,24 @@ class LawModel(nn.Module):
         law_preds = (law_probs > 0.3).int()  # 使用阈值进行预测
 
         return law_loss, topk_loss, law_preds
-
-
+    
+    
     def predict(self, input_facts, type_ids_list, attention_mask_list, law_labels):
-        # 将输入数据通过 CNN
+        # 将输入数据通过CNN
         batch_size = input_facts.size(0)
+        # 将 input_ids 转换为词嵌入
         input_facts = self.embedding(input_facts)  # [batch_size, seq_len, word_emb_dim]
+
         input_facts = input_facts.permute(0, 2, 1)  # [batch_size, word_emb_dim, seq_len]
         cnn_out = self.cnn(input_facts)  # [batch_size, 512, seq_len // 8]
         cnn_out = cnn_out.view(batch_size, -1)  # [batch_size, 512 * (seq_len // 8)]
 
-        law_probs, _ = self.classifier_layer(cnn_out, law_labels)  # [batch_size, law_label_size]
+        # 分类器
+        law_probs, law_loss = self.classifier_layer(cnn_out, law_labels)  # [batch_size, law_label_size]
 
         return law_probs
-    
 
-os.chdir('/home/u22451152/Uni-LAP/main')
+os.chdir('/home/u22451152/Uni-LAP/SCM')
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -181,7 +184,7 @@ def seed_rand(SEED_NUM):
 class Config:
     def __init__(self):
         self.topk = 3
-        self.vocab_size = 21128
+        self.vocab_size = 30522
         self.MAX_SENTENCE_LENGTH = 500
         self.word_emb_dim = 200
         self.pretrain_word_embedding = None
@@ -189,13 +192,13 @@ class Config:
         self.id2word_dict = None
         self.bert_path = None
 
-        self.law_label_size = 74  # TODO law_label_size
+        self.law_label_size = 10  # TODO law_label_size
         self.law_relation_threshold = 0.3
 
         self.sent_len = 100
         self.doc_len = 15
         #  hyperparameters
-        self.HP_iteration = 34
+        self.HP_iteration = 200
         self.HP_batch_size = 64
         self.HP_hidden_dim = 200
         self.HP_dropout = 0.2
@@ -256,7 +259,7 @@ class Config:
 
 
 class BERTDataset(Dataset):
-    def __init__(self, data, tokenizer, max_len, id2word_dict, fact_type, law_label_size=74): # TODO law_label_size
+    def __init__(self, data, tokenizer, max_len, id2word_dict, fact_type, law_label_size=10): # TODO law_label_size
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.data = data
@@ -304,7 +307,7 @@ class BERTDataset(Dataset):
 
         # 分词并处理为统一长度（500）
         batch_out = self.tokenizer.batch_encode_plus(
-            batch_raw_fact_list, max_length=500, padding='max_length', return_tensors='pt', truncation=True
+            batch_raw_fact_list, max_length=self.max_len, padding='max_length', return_tensors='pt', truncation=True
         )
 
         padded_input_ids = torch.LongTensor(batch_out['input_ids']).to(DEVICE)
@@ -317,17 +320,18 @@ class BERTDataset(Dataset):
 
 def load_dataset(path):
     # ecthr数据集
-    train_path = os.path.join(path, "train_filtered_cail.pkl")
-    valid_path = os.path.join(path, "valid_filtered_cail.pkl")
-    test_path = os.path.join(path, "test_filtered_cail.pkl")
+    train_path = os.path.join(path, "train_filtered_ecthr_str.pkl")
+    valid_path = os.path.join(path, "valid_filtered_ecthr_str.pkl")
+    test_path = os.path.join(path, "test_filtered_ecthr_str.pkl")
 
     train_dataset = pickle.load(open(train_path, mode='rb'))
     valid_dataset = pickle.load(open(valid_path, mode='rb'))
     test_dataset = pickle.load(open(test_path, mode='rb'))
 
-    print("train dataset sample:", train_dataset['raw_facts_list'][0])
+    print("train dataset sample:", train_dataset['raw_facts_list'][0][:100])
     print("train dataset sample len:", len(train_dataset['law_label_lists']))
     return train_dataset, valid_dataset, test_dataset
+
 
 def str2bool(params):
     return True if params.lower() == 'true' else False
@@ -380,6 +384,7 @@ def get_result(law_target, law_preds, mode):
 
     return law_macro_f1
 
+
 def calculate_topk_accuracy(true_labels, pred_probs, k):
     """
     Args:
@@ -413,9 +418,46 @@ def calculate_topk_accuracy(true_labels, pred_probs, k):
 
     return accuracy
 
+def calculate_topk_accuracy_accurate(true_labels, pred_probs, k):
+    """
+    Args:
+        true_labels (list): 真实标签，形状为 [batch_size, num_classes]。
+        pred_probs (list): 预测概率，形状为 [batch_size, num_classes]。
+        k (int): Top-K 的 K 值。
+
+    Returns:
+        float: 所有样本的 Top-K 准确率均值。
+    """
+    true_labels = torch.tensor(true_labels)  # 转换为张量
+    pred_probs = torch.tensor(pred_probs)  # 转换为张量
+
+    _, topk_preds = torch.topk(pred_probs, k, dim=1)  # 形状为 [batch_size, k]
+
+    sample_accuracies = []  # 存储每个样本的 Top-K 准确率
+
+    for i in range(true_labels.size(0)):
+        true_label = torch.nonzero(true_labels[i]).squeeze()  # 真实标签的索引
+        if true_label.dim() == 0:  # 如果只有一个真实标签
+            true_label = true_label.unsqueeze(0)
+        
+        # 计算当前样本的 Top-K 准确率
+        correct = 0
+        for label in true_label:
+            if label in topk_preds[i]:
+                correct += 1
+        
+        # 当前样本的准确率 = 正确预测的标签数 / 真实标签数
+        sample_accuracy = correct / true_label.size(0)
+        sample_accuracies.append(sample_accuracy)
+
+    # 计算所有样本的 Top-K 准确率均值
+    mean_accuracy = torch.tensor(sample_accuracies).mean().item()
+
+    return mean_accuracy
 
 
-def evaluate(model, valid_dataloader, name, epoch_idx, k=3):   # TODO
+
+def evaluate(model, valid_dataloader, name, epoch_idx, k=3):
     """
     评估模型在多标签分类任务上的性能，并计算 Top-K 准确率。
     
@@ -424,7 +466,7 @@ def evaluate(model, valid_dataloader, name, epoch_idx, k=3):   # TODO
         valid_dataloader: 验证集 DataLoader
         name: 评估名称（用于打印日志）
         epoch_idx: 当前 epoch 索引
-        k: Top-K 的 K 值，默认为 config.topk
+        k: Top-K 的 K 值，默认为 5
 
     Returns:
         macro_f1: 宏平均 F1 分数
@@ -455,6 +497,8 @@ def evaluate(model, valid_dataloader, name, epoch_idx, k=3):   # TODO
 
     topk_accuracy = calculate_topk_accuracy(ground_law_y, all_law_probs, k)
     print(f"{name} Top-{k} Accuracy: {topk_accuracy:.4f}")
+    topk_accuracy_accu = calculate_topk_accuracy_accurate(ground_law_y, all_law_probs, k)
+    print(f"{name} Top-{k} Accuracy_accurate: {topk_accuracy_accu:.4f}")
 
     if name == 'Test':
         # 将所有的 law_probs 存储到 JSON 文件中
@@ -463,7 +507,6 @@ def evaluate(model, valid_dataloader, name, epoch_idx, k=3):   # TODO
         print("已将 law_probs 存储到 JSON 文件中, 位置在：", config.save_model_dir)
 
     return topk_accuracy
-
 
 def train(model, dataset, config: Config):
     train_dataloader = dataset["train_data_set"]
@@ -508,15 +551,15 @@ def train(model, dataset, config: Config):
 
         for batch_idx, datapoint in enumerate(train_dataloader):
             fact_list, type_ids_list, attention_mask_list, _, law_label_lists = datapoint
+            law_loss, topk_loss, law_preds = model.forward(fact_list, type_ids_list, attention_mask_list, law_label_lists)
+
             # 将数据移动到 GPU
             fact_list = fact_list.to(DEVICE)
             type_ids_list = type_ids_list.to(DEVICE)
             attention_mask_list = attention_mask_list.to(DEVICE)
             law_label_lists = law_label_lists.to(DEVICE)
 
-            law_loss, topk_loss, law_preds = model.forward(fact_list, type_ids_list, attention_mask_list, law_label_lists)
-
-            loss = law_loss + topk_loss*0.1 # 超参
+            loss = law_loss + topk_loss*0.1   # 超参
 
             sample_loss += loss.data
             sample_law_loss += law_loss.data
@@ -539,7 +582,9 @@ def train(model, dataset, config: Config):
                       ((batch_idx + 1), temp_cost,sample_loss, sample_law_loss, sample_topk_loss,  cur_hamming, cur_jaccard))
                 
                 if (batch_idx + 1) % 1000 == 0:
+                    model.eval()
                     current_score = evaluate(model, valid_dataloader, "Valid", -1)
+                    model.train()
 
                 sys.stdout.flush()
                 sample_loss = 0
@@ -554,8 +599,14 @@ def train(model, dataset, config: Config):
         sys.stdout.flush()
 
         # 验证集评估
+        model.eval()
         current_score = evaluate(model, valid_dataloader, "Valid", -1)
-        print(f"dev current score: {current_score}")
+        model.train()
+        print(f"Valid current score  : {current_score}")
+
+        # # 保存所有模型参数 防止训练断了
+        # model_name = os.path.join(config.save_model_dir, f"{idx}.ckpt")
+        # torch.save(model.state_dict(), model_name)
 
         # 如果当前模型在验证集上的性能更好，则保存模型
         if current_score > best_score:
@@ -566,9 +617,12 @@ def train(model, dataset, config: Config):
             print(f"New best model saved at epoch {idx} with score {best_score:.4f}")
 
         # 测试集评估
+        model.eval()
         _ = evaluate(model, test_dataloader, "Test", -1)
+        model.train()
 
     print(f"Training complete. Best model saved at epoch {best_epoch} with score {best_score:.4f}")
+
 
 
 def Test(model, dataset, config: Config):
@@ -578,18 +632,18 @@ def Test(model, dataset, config: Config):
 
 if __name__ == '__main__':
     print(datetime.datetime.now())
-    BASE = "/home/u22451152/Uni-LAP/main"
+    BASE = "/home/u22451152/Uni-LAP/SCM"
     parser = argparse.ArgumentParser(description='Uni-LAP')
-    parser.add_argument('--data_path', default="/home/u22451152/Uni-LAP/main/datasets/cail")
+    parser.add_argument('--data_path', default="/home/u22451152/Uni-LAP/SCM/datasets/ecthr")
     parser.add_argument('--status', default="test")
-    parser.add_argument('--savemodel', default=BASE+"/results/cail/CNN_llm")
+    parser.add_argument('--savemodel', default=BASE+"/results/ecthr/CNN_llm")
     parser.add_argument('--loadmodel', default="")
 
     parser.add_argument('--embedding_path', default=BASE+'/cail_thulac.npy')
     parser.add_argument('--word2id_dict', default=BASE+'/data/w2id_thulac.pkl')
+    parser.add_argument('--MAX_SENTENCE_LENGTH', default=8192, type=int)
 
     parser.add_argument('--word_emb_dim', default=200, type=int)
-    parser.add_argument('--MAX_SENTENCE_LENGTH', default=510, type=int)
 
     parser.add_argument('--HP_iteration', default=100, type=int)
     parser.add_argument('--HP_batch_size', default=32, type=int)
@@ -602,21 +656,16 @@ if __name__ == '__main__':
 
     parser.add_argument('--seed', default=2022, type=int)
 
-    # crime-bert xs刑事
-    # parser.add_argument('--bert_path', default='/home/u22451152/Uni-LAP/main/xs', type=str)
     # 经典bert
-    parser.add_argument('--bert_path', default='/home/u22451152/google-bert/bert-base-chinese', type=str)
-    # legal-bert
-    # parser.add_argument('--bert_path', default='/home/u22451152/nlpaueb/legal-bert-base-uncased', type=str)
+    parser.add_argument('--bert_path', default='/home/u22451152/google-bert/bert-base-uncased', type=str)
 
     parser.add_argument('--sample_size', default='all', type=str)
 
     parser.add_argument('--mlp_size', default=512, type=int)
     parser.add_argument('--law_relation_threshold', default=0.3, type=float)
     parser.add_argument('--model_path', 
-                        default='/home/u22451152/Uni-LAP/main/results/cail/CNN_llm/2025-01-17 23:47:08.652121/best_model_epoch.ckpt', 
+                        default='/home/u22451152/Uni-LAP/SCM/results/ecthr/CNN_baseline/2025-01-20 16:25:31.504392/4.ckpt', 
                         type=str)
-
     args = parser.parse_args()
     print(args)
 
@@ -666,9 +715,9 @@ if __name__ == '__main__':
         valid_dataset = BERTDataset(valid_data, tokenizer, config.MAX_SENTENCE_LENGTH, config.id2word_dict, 'fact')
         test_dataset = BERTDataset(test_data, tokenizer, config.MAX_SENTENCE_LENGTH, config.id2word_dict, 'fact')
 
-        train_dataloader = DataLoader(train_dataset, batch_size=config.HP_batch_size, shuffle=True, collate_fn=train_dataset.collate_bert_fn, num_workers= 0)
-        valid_dataloader = DataLoader(valid_dataset, batch_size=config.HP_batch_size, shuffle=False, collate_fn=valid_dataset.collate_bert_fn, num_workers= 0)
-        test_dataloader = DataLoader(test_dataset, batch_size=config.HP_batch_size, shuffle=False, collate_fn=test_dataset.collate_bert_fn, num_workers= 0)
+        train_dataloader = DataLoader(train_dataset, batch_size=config.HP_batch_size, shuffle=True, collate_fn=train_dataset.collate_bert_fn)
+        valid_dataloader = DataLoader(valid_dataset, batch_size=config.HP_batch_size, shuffle=False, collate_fn=valid_dataset.collate_bert_fn)
+        test_dataloader = DataLoader(test_dataset, batch_size=config.HP_batch_size, shuffle=False, collate_fn=test_dataset.collate_bert_fn)
 
         print("train_data %d, valid_data %d, test_data %d." % (
             len(train_dataset), len(valid_dataset), len(test_dataset)))
@@ -681,7 +730,7 @@ if __name__ == '__main__':
 
         seed_rand(args.seed)
         model = LawModel(config)
-        # model.load_state_dict(torch.load(args.model_path, map_location=DEVICE))
+
         # 训练阶段
         print("\nTraining...")
         if config.HP_gpu:
