@@ -42,7 +42,7 @@ python llm/step4_Post_processing_random_version_crime-bert.py
 
 ### Related link
 1. [CAIL2018.zip](https://huggingface.co/datasets/china-ai-law-challenge/cail2018)
-2. [ecthr-b](https://opil.ouplaw.com/display/10.1093/law:epil/9780199231690/law-9780199231690-e791)
+2. [ecthr-b](https://huggingface.co/datasets/AUEB-NLP/ecthr_cases)
 3. [cail_thulac.npy](https://drive.google.com/file/d/1_j1yYuG1VSblMuMCZrqrL0AtxadFUaXC/view?usp=drivesdk+ ) 
 4. [w2id_thulac.pkl](https://drive.google.com/file/d/1jnNgilApBRnA2ihldOr1Ceaci_7aFtsD/view?usp=drive_link)
 5. [bert-base-chinese](https://huggingface.co/google-bert/bert-base-chinese) 
