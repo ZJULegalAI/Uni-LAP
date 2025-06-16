@@ -1,3 +1,4 @@
+
 ## Universal Legal Article Prediction via Tight Collaboration between Supervised Classification Model and LLM
 ### Introduction
 This repository contains the data and code for the paper [Universal Legal Article Prediction via Tight Collaboration between Supervised Classification Model and LLM](https://sites.northwestern.edu/icail2025/accepted-papers/) 
