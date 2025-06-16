@@ -23,7 +23,7 @@ python main/train_CNN_cail.py
 python llm/step2_probs-index2lawname.py
 ```
 
-3. Third, run two_stage_llm_inference.py. This script facilitates **a sophisticated two-stage inference pipeline utilizing a Large Language Model (LLM) for accurate legal article prediction**. Initially, it takes the top-k law predictions from a Supervised Classification Model and the case facts to generate a comprehensive legal analysis via the LLM. Subsequently, this derived analysis, combined with the original facts and candidate laws, is used to prompt the LLM for the final legal article determination. 
+3. Third, run step3_llm_main_random_version_Call_twice_crime-bert.py. This script facilitates **a sophisticated two-stage inference pipeline utilizing a Large Language Model (LLM) for accurate legal article prediction**. Initially, it takes the top-k law predictions from a Supervised Classification Model and the case facts to generate a comprehensive legal analysis via the LLM. Subsequently, this derived analysis, combined with the original facts and candidate laws, is used to prompt the LLM for the final legal article determination. 
 ```shell
 python llm/step3_llm_main_random_version_Call_twice_crime-bert.py
 ```
